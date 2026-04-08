@@ -14,7 +14,7 @@ class ClientFactory implements Factory
         // Lets first check endpoint is set.
         if (empty($params['endpoint'])) {
             throw new InvalidArgumentException(
-                'Missing required environment variable OPENSEARCH_ENDPOINT. '
+                'Missing required environment variable OPENSEARCH_ENDPOINT.'
             );
         }
 
