@@ -27,6 +27,7 @@ General parameters:
 OPENSEARCH_ENDPOINT="https://localhost:9200"   # Required
 OPENSEARCH_SSL_VERIFICATION="true"             # Optional, defaults to true
 OPENSEARCH_INDEX_VARIANT="dev"                 # Optional
+OPENSEARCH_ENABLE_SEARCH=true                  # Required
 ```
 
 ### Local (basic auth)
