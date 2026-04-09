@@ -11,15 +11,21 @@ class ClientFactory implements Factory
 {
     public function create($service, array $params = []): Client
     {
-        $endpoint = $params['endpoint'] ?? throw new InvalidArgumentException('Missing OpenSearch endpoint.');
+        // Lets first check endpoint is set.
+        if (empty($params['endpoint'])) {
+            throw new InvalidArgumentException(
+                'Missing required environment variable OPENSEARCH_ENDPOINT.'
+            );
+        }
 
+        $endpoint = $params['endpoint'];
         $sslVerification = filter_var($params['ssl_verification'] ?? true, FILTER_VALIDATE_BOOLEAN);
 
         $builder = ClientBuilder::create()
             ->setHosts([$endpoint])
             ->setSSLVerification($sslVerification);
 
-        // 1. LOCAL DEV: Use Basic Auth if username & password are provided
+        // 1. Use Basic Auth if username & password are provided
         if (!empty($params['username']) && !empty($params['password'])) {
             $builder->setBasicAuthentication($params['username'], $params['password']);
         }
@@ -37,7 +43,11 @@ class ClientFactory implements Factory
         }
 
         else {
-            throw new InvalidArgumentException('Provide either Basic Auth (local) or AWS Region (test/uat/production).');
+            throw new InvalidArgumentException(
+                'OpenSearch authentication is not configured. '
+                . 'For local development set OPENSEARCH_USERNAME and OPENSEARCH_PASSWORD. '
+                . 'For AWS set OPENSEARCH_AWS_REGION and OPENSEARCH_AWS_SERVICE.'
+            );
         }
 
         return $builder->build();
