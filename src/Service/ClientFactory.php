@@ -18,13 +18,6 @@ class ClientFactory implements Factory
             );
         }
 
-        // Then check if search is enabled.
-        if (!filter_var($params['enable_search'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
-            throw new InvalidArgumentException(
-                'OpenSearch is not enabled. Set OPENSEARCH_ENABLE_SEARCH=true to enable it.'
-            );
-        }
-
         $endpoint = $params['endpoint'];
         $sslVerification = filter_var($params['ssl_verification'] ?? true, FILTER_VALIDATE_BOOLEAN);
 

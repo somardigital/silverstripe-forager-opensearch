@@ -28,7 +28,6 @@ SilverStripe\Core\Injector\Injector:
       aws_service: '`OPENSEARCH_AWS_SERVICE`'
       aws_region: '`OPENSEARCH_AWS_REGION`'
       ssl_verification: '`OPENSEARCH_SSL_VERIFICATION`'
-      enable_search: '`OPENSEARCH_ENABLE_SEARCH`'
 
 # // analysis is the top-level OpenSearch settings key where analyzers, tokenizers, char filters, and token filters are configured
 Somar\ForagerElasticsearch\Service\OpensearchService:
