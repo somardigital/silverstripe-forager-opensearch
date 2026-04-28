@@ -1,65 +1,68 @@
-# Silverstripe Forager — OpenSearch provider
+# Silverstripe Forager OpenSearch Provider
 
 OpenSearch indexing provider for [Silverstripe Forager](https://github.com/silverstripeltd/silverstripe-forager).
 
-This module provides the ability to index content into an [OpenSearch](https://opensearch.org) cluster using the
-[opensearch-project/opensearch-php](https://github.com/opensearch-project/opensearch-php) client.
+This module indexes content into an [OpenSearch](https://opensearch.org) cluster using
+[opensearch-project/opensearch-php](https://github.com/opensearch-project/opensearch-php).
 
-This module **does not** provide any method for performing searches. It is responsible for indexing only.
+This module does not provide search query APIs. It is responsible for indexing only.
+
+## Requirements
+
+- PHP 8.3+
+- Silverstripe Framework 6.2+
+- silverstripe/silverstripe-forager 2.x
 
 ## Installation
 
 ```bash
 composer require somardigital/silverstripe-forager-opensearch
+```
 
-## Activating OpenSearch
+## OpenSearch Client Authentication
 
 Authentication mode is selected automatically:
 
-- In `SS_ENVIRONMENT_TYPE=dev`, the client uses basic authentication
-- In non-dev environments, the client uses AWS IAM SigV4 authentication
+- In `SS_ENVIRONMENT_TYPE=dev`, the client uses basic authentication.
+- In non-dev environments, the client uses AWS IAM SigV4 authentication.
 
-If you want to support overriding this explicitly, pass `auth_type` through Injector config.
+If you need to override this behavior, set `auth_type` via Injector configuration.
 
-General parameters:
+### Shared Environment Variables
 
-```
+```env
 OPENSEARCH_ENDPOINT="https://localhost:9200"   # Required
 OPENSEARCH_SSL_VERIFICATION="true"             # Optional, defaults to true
 OPENSEARCH_INDEX_VARIANT="dev"                 # Optional
 ```
 
-### Local (basic auth)
+`OPENSEARCH_INDEX_VARIANT` is injected into Forager v2 `IndexConfiguration::indexPrefix` by this module.
 
-Define these environment variables for basic auth:
+### Local Basic Auth
 
-```
+```env
 OPENSEARCH_ENDPOINT="https://localhost:9200"
 OPENSEARCH_USERNAME="admin"
 OPENSEARCH_PASSWORD="secret"
-OPENSEARCH_SSL_VERIFICATION="false" # Optional if using a self-signed local certificate
+OPENSEARCH_SSL_VERIFICATION="false" # Optional when using self-signed certificates
 ```
 
-### Non-local (AWS IAM SigV4)
+### AWS SigV4 Auth
 
-Define these environment variables for SigV4 auth:
-
-```
+```env
 OPENSEARCH_ENDPOINT="https://search-domain.region.es.amazonaws.com"
 OPENSEARCH_AWS_REGION="ap-southeast-2"
 OPENSEARCH_AWS_SERVICE="es" # Optional, defaults to "es". Use "aoss" for OpenSearch Serverless.
 ```
 
-`OPENSEARCH_AWS_SERVICE` defaults to `es` when omitted.
+For SigV4 authentication, the AWS SDK for PHP must be available. If explicit credentials are not provided,
+the AWS default credential provider chain is used.
 
-For SigV4 authentication, the AWS SDK for PHP must be available. If explicit credentials are not provided, the client falls back to the default AWS credential provider chain.
+Security note: Ensure your OpenSearch endpoint uses HTTPS so credentials are encrypted in transit.
 
-> **Security note:** Ensure your OpenSearch endpoint is served over HTTPS so that credentials are encrypted in transit.
+## Configuring Index Mappings
 
-## Configuring OpenSearch
-
-The most notable configuration surface is the schema, which determines how data is stored in your
-OpenSearch index. There are the following field types currently supported:
+OpenSearch mapping types supported by this module:
 
 - `text` (default)
 - `alias`
@@ -75,7 +78,8 @@ OpenSearch index. There are the following field types currently supported:
 - `object`
 - `nested`
 
-The following additional options are available:
+Additional supported mapping options:
+
 - `fields`
 - `format`
 - `ignore_above`
@@ -87,7 +91,7 @@ The following additional options are available:
 - `store`
 - `term_vector`
 
-You can specify these data types in the `options` node of your fields.
+Example:
 
 ```yaml
 SilverStripe\Forager\Service\IndexConfiguration:
@@ -102,15 +106,15 @@ SilverStripe\Forager\Service\IndexConfiguration:
               options:
                 type: text
           settings:
-
+            analysis: {}
 ```
 
-**Note**: Be careful about changing your schema. OpenSearch may need to be fully reindexed if you
-change the name of a field. Fields cannot be deleted, so renaming one will leave any previously created fields around.
+Note: Changing field names or field types often requires a full reindex.
+Fields cannot be deleted, so renaming one will leave any previously created fields around.
 
 ## Indexing File Content
 
-The [silverstripe/textextraction](https://docs.silverstripe.org/en/6/optional_features/textextraction/) module is the recommended approach for extracting file content for indexing.
+Use [silverstripe/textextraction](https://docs.silverstripe.org/en/6/optional_features/textextraction/) to extract file content:
 
 ```yaml
 SilverStripe\Forager\Service\IndexConfiguration:
@@ -125,10 +129,13 @@ SilverStripe\Forager\Service\IndexConfiguration:
                 type: text
 ```
 
-## Additional documentation
+## Forager v2 API Note
 
-Majority of documentation is provided by the Silverstripe Forager module. A couple in particular that might be useful
-to you are:
+If you interact with the indexing service directly in PHP, Forager v2 requires `indexSuffix` as the first
+argument for document operations such as `addDocument()`, `removeDocument()`, `addDocuments()`, and `removeDocuments()`.
 
-- [Configuration](https://github.com/silverstripeltd/silverstripe-forager/blob/1/docs/en/configuration.md)
-- [Customisation](https://github.com/silverstripeltd/silverstripe-forager/blob/1/docs/en/customising.md)
+## Additional Documentation
+
+- [Forager configuration docs](https://github.com/silverstripeltd/silverstripe-forager/blob/main/docs/en/02_configuration.md)
+- [Forager customisation docs](https://github.com/silverstripeltd/silverstripe-forager/blob/main/docs/en/05_customising.md)
+- [Forager v2 migration notes](https://github.com/silverstripeltd/silverstripe-forager/blob/main/docs/en/12_v2_migration.md)
