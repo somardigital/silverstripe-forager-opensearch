@@ -109,6 +109,12 @@ class OpensearchService implements IndexingInterface
 
     public function addDocuments(string $indexSuffix, array $documents): array
     {
+        $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
+        if (!$indexData) {
+            throw new InvalidArgumentException(sprintf('Unknown index suffix "%s"', $indexSuffix));
+        }
+
         $documentMap = $this->getContentMapForDocuments($indexSuffix, $documents);
         $idField = $this->getConfiguration()->getIDField();
         $processedIds = [];
@@ -163,6 +169,7 @@ class OpensearchService implements IndexingInterface
     public function removeDocuments(string $indexSuffix, array $documents): array
     {
         $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
         if (!$indexData) {
             throw new InvalidArgumentException(sprintf('Unknown index suffix "%s"', $indexSuffix));
         }
@@ -216,9 +223,10 @@ class OpensearchService implements IndexingInterface
     }
 
     /**
-     * Remove all documents from the provided index using delete-by-query.
+     * Remove documents from the provided index using delete-by-query.
      *
-     * @param string $indexName The index name to remove all documents from
+     * @param string $indexSuffix The index suffix to remove documents from.
+     * @param int $batchSize The maximum number of documents to remove in a single batch.
      * @return int The total number of documents removed
      */
     public function clearIndexDocuments(string $indexSuffix, int $batchSize): int
@@ -657,7 +665,7 @@ class OpensearchService implements IndexingInterface
 
     private function documentBelongsToIndexSuffix(string $indexSuffix, DocumentInterface $document): bool
     {
-        $indexes = $this->getConfiguration()->getIndexConfigurationsForDocument($document);
+        $indexes = $this->getConfiguration()->getIndexConfigurationsForDocument($document) ?? [];
 
         return array_key_exists($indexSuffix, $indexes);
     }
