@@ -197,7 +197,8 @@ class OpensearchService implements IndexingInterface
             return [];
         }
 
-        $envIndex = $this->environmentizeIndex($indexData->getSuffix());
+        $envIndex = $this->environmentizeIndex($indexSuffix);
+
         $body = array_map(static fn($id) => [
             'delete' => [
                 '_index' => $envIndex,
