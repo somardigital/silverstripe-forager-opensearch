@@ -343,21 +343,26 @@ class OpensearchService implements IndexingInterface
             $this->validateIndex($indexSuffix);
 
             $envIndex = $this->environmentizeIndex($indexSuffix);
-            $this->findOrMakeIndex($envIndex);
-
             $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
 
             if (!$indexData) {
                 throw new IndexingServiceException(sprintf('No index configuration found for suffix "%s"', $indexSuffix));
             }
 
-            $definedMappings = $this->getMappingsForFields(
-                $indexData->getFields()
-            );
-
+            // Gather all data first
             $definedSettings = $this->getIndexSettings($indexSuffix);
+            $definedMappings = $this->getMappingsForFields($indexData->getFields());
+
+            // Create the index (Passing settings so it starts with analyzers)
+            $this->findOrMakeIndex($envIndex, $definedSettings);
 
             try {
+                // Apply settings FIRST (This handles updates to existing indexes)
+                if (count($definedSettings) > 0) {
+                    $this->applyIndexSettings($envIndex, $definedSettings);
+                }
+
+                // Apply mappings SECOND (Analyzers are now guaranteed to exist)
                 if (count($definedMappings) > 0) {
                     $indices->putMapping([
                         'index' => $envIndex,
@@ -366,14 +371,10 @@ class OpensearchService implements IndexingInterface
                         ],
                     ]);
                 }
-
-                if (count($definedSettings) > 0) {
-                    $this->applyIndexSettings($envIndex, $definedSettings);
-                }
             } catch (Throwable $e) {
                 throw new IndexingServiceException(sprintf(
                     'Failed to update index mapping and settings: %s',
-                    $e->getMessage(),
+                    $e->getMessage()
                 ));
             }
 
@@ -486,7 +487,7 @@ class OpensearchService implements IndexingInterface
         return $this;
     }
 
-    private function findOrMakeIndex(string $index): void
+    private function findOrMakeIndex(string $index, array $settings = []): void
     {
         $indices = $this->getClient()->indices();
 
@@ -494,7 +495,16 @@ class OpensearchService implements IndexingInterface
             return;
         }
 
-        $indices->create(['index' => $index]);
+        $params = ['index' => $index];
+
+        // If we have analyzers/settings, include them in the initial create call
+        if (count($settings) > 0) {
+            $params['body'] = [
+                'settings' => $settings,
+            ];
+        }
+
+        $indices->create($params);
     }
 
     /**
