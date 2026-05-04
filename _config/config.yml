@@ -10,7 +10,7 @@ After:
 SilverStripe\Core\Injector\Injector:
   SilverStripe\Forager\Service\IndexConfiguration:
     constructor:
-      index_variant: '`OPENSEARCH_INDEX_VARIANT`'
+      indexPrefix: '`OPENSEARCH_INDEX_VARIANT`'
 
   SilverStripe\Forager\Interfaces\IndexingInterface:
     class: Somar\ForagerElasticsearch\Service\OpensearchService

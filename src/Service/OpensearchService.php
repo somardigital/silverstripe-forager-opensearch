@@ -2,6 +2,8 @@
 
 namespace Somar\ForagerElasticsearch\Service;
 
+use stdClass;
+use Throwable;
 use InvalidArgumentException;
 use OpenSearch\Client;
 use Psr\Log\LoggerInterface;
@@ -11,7 +13,6 @@ use SilverStripe\Core\Injector\Injectable;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Forager\Exception\IndexConfigurationException;
 use SilverStripe\Forager\Exception\IndexingServiceException;
-use SilverStripe\Forager\Interfaces\BatchDocumentRemovalInterface;
 use SilverStripe\Forager\Interfaces\DocumentInterface;
 use SilverStripe\Forager\Interfaces\IndexingInterface;
 use SilverStripe\Forager\Schema\Field;
@@ -19,19 +20,17 @@ use SilverStripe\Forager\Service\DocumentBuilder;
 use SilverStripe\Forager\Service\IndexConfiguration;
 use SilverStripe\Forager\Service\Traits\ConfigurationAware;
 
-class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterface
+class OpensearchService implements IndexingInterface
 {
     use Configurable;
     use ConfigurationAware;
     use Injectable;
 
-    private const DEFAULT_FIELD_TYPE = 'text';
+    private const string DEFAULT_FIELD_TYPE = 'text';
 
     private Client $client;
 
     private DocumentBuilder $builder;
-
-    private static bool $variant_is_suffix = true;
 
     private static int $max_document_size = 102400;
 
@@ -101,60 +100,81 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         return $this->config()->get('max_document_size');
     }
 
-    public function addDocument(DocumentInterface $document): ?string
+    public function addDocument(string $indexSuffix, DocumentInterface $document): ?string
     {
-        $ids = $this->addDocuments([$document]);
+        $ids = $this->addDocuments($indexSuffix, [$document]);
 
         return array_shift($ids);
     }
 
-    public function addDocuments(array $documents): array
+    public function addDocuments(string $indexSuffix, array $documents): array
     {
-        $documentMap = $this->getContentMapForDocuments($documents);
+        $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
+        if (!$indexData) {
+            throw new InvalidArgumentException(sprintf('Unknown index suffix "%s"', $indexSuffix));
+        }
+
+        $documentMap = $this->getContentMapForDocuments($indexSuffix, $documents);
+        $idField = $this->getConfiguration()->getIDField();
         $processedIds = [];
 
-        foreach ($documentMap as $index => $docsToAdd) {
-            $envIndex = $this->environmentizeIndex($index);
-            $body = [];
+        if (!$documentMap) {
+            return [];
+        }
 
-            foreach ($docsToAdd as $document) {
-                $body[] = [
-                    'index' => [
-                        '_index' => $envIndex,
-                        '_id' => $document['id'],
-                    ],
-                ];
-                $body[] = $document;
+        $envIndex = $this->environmentizeIndex($indexSuffix);
+        $body = [];
+
+        foreach ($documentMap as $document) {
+            $id = $document[$idField] ?? null;
+
+            if (!$id) {
+                throw new IndexingServiceException(sprintf('Missing required ID field "%s" in document payload', $idField));
             }
 
-            $response = $this->getClient()->bulk([
-                'body' => $body,
-            ]);
+            $body[] = [
+                'index' => [
+                    '_index' => $envIndex,
+                    '_id' => $id,
+                ],
+            ];
+            $body[] = $document;
+        }
 
-            foreach ($response['items'] as $item) {
-                if (isset($item['index']['error'])) {
-                    throw new IndexingServiceException(
-                        sprintf('Failed to index document: %s', $item['index']['error']['reason'])
-                    );
-                }
+        $response = $this->getClient()->bulk([
+            'body' => $body,
+        ]);
 
-                $processedIds[] = strval($item['index']['_id']);
+        foreach ($response['items'] as $item) {
+            if (isset($item['index']['error'])) {
+                throw new IndexingServiceException(
+                    sprintf('Failed to index document: %s', $item['index']['error']['reason'])
+                );
             }
+
+            $processedIds[] = strval($item['index']['_id']);
         }
 
         return array_unique($processedIds);
     }
 
-    public function removeDocument(DocumentInterface $document): ?string
+    public function removeDocument(string $indexSuffix, DocumentInterface $document): ?string
     {
-        $ids = $this->removeDocuments([$document]);
+        $ids = $this->removeDocuments($indexSuffix, [$document]);
 
         return array_shift($ids);
     }
 
-    public function removeDocuments(array $documents): array
+    public function removeDocuments(string $indexSuffix, array $documents): array
     {
-        $documentMap = [];
+        $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
+        if (!$indexData) {
+            throw new InvalidArgumentException(sprintf('Unknown index suffix "%s"', $indexSuffix));
+        }
+
+        $idsToRemove = [];
         $processedIds = [];
 
         foreach ($documents as $document) {
@@ -166,61 +186,60 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
                 ));
             }
 
-            $indexes = $this->getConfiguration()->getIndexesForDocument($document);
-
-            foreach (array_keys($indexes) as $indexName) {
-                if (!isset($documentMap[$indexName])) {
-                    $documentMap[$indexName] = [];
-                }
-
-                $documentMap[$indexName][] = $document->getIdentifier();
+            if (!$this->documentBelongsToIndexSuffix($indexSuffix, $document)) {
+                continue;
             }
+
+            $idsToRemove[] = $document->getIdentifier();
         }
 
-        foreach ($documentMap as $indexName => $idsToRemove) {
-            $envIndex = $this->environmentizeIndex($indexName);
-            $body = array_map(static function ($id) use ($envIndex) {
-                return [
-                    'delete' => [
-                        '_index' => $envIndex,
-                        '_id' => $id,
-                    ],
-                ];
-            }, $idsToRemove);
+        if (!$idsToRemove) {
+            return [];
+        }
 
-            $response = $this->getClient()->bulk([
-                'body' => $body,
-            ]);
+        $envIndex = $this->environmentizeIndex($indexSuffix);
 
-            foreach ($response['items'] as $item) {
-                if (isset($item['delete']['error'])) {
-                    throw new IndexingServiceException(
-                        sprintf('Failed to remove document: %s', $item['delete']['error']['reason'])
-                    );
-                }
+        $body = array_map(static fn($id) => [
+            'delete' => [
+                '_index' => $envIndex,
+                '_id' => $id,
+            ],
+        ], $idsToRemove);
 
-                $processedIds[] = strval($item['delete']['_id']);
+        $response = $this->getClient()->bulk([
+            'body' => $body,
+        ]);
+
+        foreach ($response['items'] as $item) {
+            if (isset($item['delete']['error'])) {
+                throw new IndexingServiceException(
+                    sprintf('Failed to remove document: %s', $item['delete']['error']['reason'])
+                );
             }
+
+            $processedIds[] = strval($item['delete']['_id']);
         }
 
         return array_unique($processedIds);
     }
 
     /**
-     * Remove all documents from the provided index using delete-by-query.
+     * Remove documents from the provided index using delete-by-query.
      *
-     * @param string $indexName The index name to remove all documents from
+     * @param string $indexSuffix The index suffix to remove documents from.
+     * @param int $batchSize The maximum number of documents to remove in a single batch.
      * @return int The total number of documents removed
      */
-    public function removeAllDocuments(string $indexName): int
+    public function clearIndexDocuments(string $indexSuffix, int $batchSize): int
     {
         $response = $this->getClient()->deleteByQuery([
-            'index' => $this->environmentizeIndex($indexName),
+            'index' => $this->environmentizeIndex($indexSuffix),
             'conflicts' => 'proceed',
             'allow_no_indices' => false,
+            'max_docs' => $batchSize,
             'body' => [
                 'query' => [
-                    'match_all' => new \stdClass(),
+                    'match_all' => new stdClass(),
                 ],
             ],
         ]);
@@ -228,55 +247,52 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         return $response['deleted'] ?? 0;
     }
 
-    public function getDocument(string $id): ?DocumentInterface
+    public function getDocument(string $indexSuffix, string $id): ?DocumentInterface
     {
-        $result = $this->getDocuments([$id]);
+        $result = $this->getDocuments($indexSuffix, [$id]);
 
         return $result[0] ?? null;
     }
 
-    public function getDocuments(array $ids): array
+    public function getDocuments(string $indexSuffix, array $ids): array
     {
         $docs = [];
-        $indexes = $this->getConfiguration()->getIndexes();
 
-        foreach (array_keys($indexes) as $index) {
-            $response = $this->getClient()->mget([
-                'index' => $this->environmentizeIndex($index),
-                'body' => [
-                    'ids' => $ids,
-                ],
-            ]);
+        $response = $this->getClient()->mget([
+            'index' => $this->environmentizeIndex($indexSuffix),
+            'body' => [
+                'ids' => $ids,
+            ],
+        ]);
 
-            $results = $response['docs'] ?? [];
+        $results = $response['docs'] ?? [];
 
-            foreach ($results as $data) {
-                if (!($data['found'] ?? false)) {
-                    continue;
-                }
-
-                $document = $this->getBuilder()->fromArray($data);
-
-                if (!$document) {
-                    continue;
-                }
-
-                $docs[$document->getIdentifier()] = $document;
+        foreach ($results as $data) {
+            if (!($data['found'] ?? false)) {
+                continue;
             }
+
+            $document = $this->getBuilder()->fromArray($data);
+
+            if (!$document) {
+                continue;
+            }
+
+            $docs[$document->getIdentifier()] = $document;
         }
 
         return array_values($docs);
     }
 
-    public function listDocuments(string $indexName, ?int $pageSize = null, int $currentPage = 0): array
+    public function listDocuments(string $indexSuffix, ?int $pageSize = null, int $currentPage = 0): array
     {
         $docs = [];
 
         $params = [
-            'index' => $this->environmentizeIndex($indexName),
+            'index' => $this->environmentizeIndex($indexSuffix),
             'body' => [
                 'query' => [
-                    'match_all' => new \stdClass(),
+                    'match_all' => new stdClass(),
                 ],
             ],
         ];
@@ -302,18 +318,18 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         return $docs;
     }
 
-    public function getDocumentTotal(string $indexName): int
+    public function getDocumentTotal(string $indexSuffix): int
     {
         $response = $this->getClient()->count([
-            'index' => $this->environmentizeIndex($indexName),
+            'index' => $this->environmentizeIndex($indexSuffix),
         ]);
 
         return (int) ($response['count'] ?? 0);
     }
 
-    public function getIndexSettings(string $indexName): array
+    public function getIndexSettings(string $indexSuffix): array
     {
-        $index = $this->getConfiguration()->getIndexes()[$indexName] ?? null;
+        $index = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix)?->getData();
 
         return $index['settings'] ?? [];
     }
@@ -323,19 +339,30 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         $indices = $this->getClient()->indices();
         $schemas = [];
 
-        foreach (array_keys($this->getConfiguration()->getIndexes()) as $indexName) {
-            $this->validateIndex($indexName);
+        foreach ($this->getConfiguration()->getIndexSuffixes() as $indexSuffix) {
+            $this->validateIndex($indexSuffix);
 
-            $envIndex = $this->environmentizeIndex($indexName);
-            $this->findOrMakeIndex($envIndex);
+            $envIndex = $this->environmentizeIndex($indexSuffix);
+            $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
 
-            $definedMappings = $this->getMappingsForFields(
-                $this->getConfiguration()->getFieldsForIndex($indexName)
-            );
+            if (!$indexData) {
+                throw new IndexingServiceException(sprintf('No index configuration found for suffix "%s"', $indexSuffix));
+            }
 
-            $definedSettings = $this->getIndexSettings($indexName);
+            // Gather all data first
+            $definedSettings = $this->getIndexSettings($indexSuffix);
+            $definedMappings = $this->getMappingsForFields($indexData->getFields());
+
+            // Create the index (Passing settings so it starts with analyzers)
+            $this->findOrMakeIndex($envIndex, $definedSettings);
 
             try {
+                // Apply settings FIRST (This handles updates to existing indexes)
+                if (count($definedSettings) > 0) {
+                    $this->applyIndexSettings($envIndex, $definedSettings);
+                }
+
+                // Apply mappings SECOND (Analyzers are now guaranteed to exist)
                 if (count($definedMappings) > 0) {
                     $indices->putMapping([
                         'index' => $envIndex,
@@ -344,32 +371,34 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
                         ],
                     ]);
                 }
-
-                if (count($definedSettings) > 0) {
-                    $this->applyIndexSettings($envIndex, $definedSettings);
-                }
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 throw new IndexingServiceException(sprintf(
                     'Failed to update index mapping and settings: %s',
-                    $e->getMessage(),
+                    $e->getMessage()
                 ));
             }
 
-            $schemas[$indexName] = true;
+            $schemas[$indexSuffix] = true;
         }
 
         return $schemas;
     }
 
-    public function configureIndexMappings(string $indexName): void
+    public function configureIndexMappings(string $indexSuffix): void
     {
-        $this->validateIndex($indexName);
+        $this->validateIndex($indexSuffix);
 
         $indices = $this->getClient()->indices();
-        $envIndex = $this->environmentizeIndex($indexName);
+        $envIndex = $this->environmentizeIndex($indexSuffix);
+
+        $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
+        if (!$indexData) {
+            throw new IndexingServiceException(sprintf('No index configuration found for suffix "%s"', $indexSuffix));
+        }
 
         $definedMappings = $this->getMappingsForFields(
-            $this->getConfiguration()->getFieldsForIndex($indexName)
+            $indexData->getFields()
         );
 
         if (count($definedMappings) === 0) {
@@ -383,7 +412,7 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
                     'properties' => $definedMappings,
                 ],
             ]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             throw new IndexingServiceException(sprintf(
                 'Failed to update index mapping: %s',
                 $e->getMessage(),
@@ -391,12 +420,12 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         }
     }
 
-    public function configureIndexSettings(string $indexName): void
+    public function configureIndexSettings(string $indexSuffix): void
     {
-        $this->validateIndex($indexName);
+        $this->validateIndex($indexSuffix);
 
-        $envIndex = $this->environmentizeIndex($indexName);
-        $definedSettings = $this->getIndexSettings($indexName);
+        $envIndex = $this->environmentizeIndex($indexSuffix);
+        $definedSettings = $this->getIndexSettings($indexSuffix);
 
         if (count($definedSettings) === 0) {
             return;
@@ -404,7 +433,7 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
 
         try {
             $this->applyIndexSettings($envIndex, $definedSettings);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             throw new IndexingServiceException(sprintf(
                 'Failed to update index settings: %s',
                 $e->getMessage(),
@@ -429,20 +458,9 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         }
     }
 
-    public function environmentizeIndex(string $indexName): string
+    public function environmentizeIndex(string $indexSuffix): string
     {
-        $variant = IndexConfiguration::singleton()->getIndexVariant();
-        $isSuffix = $this->config()->get('variant_is_suffix');
-
-        if ($variant && $isSuffix) {
-            return sprintf('%s_%s', $indexName, $variant);
-        }
-
-        if ($variant) {
-            return sprintf('%s_%s', $variant, $indexName);
-        }
-
-        return $indexName;
+        return $this->getConfiguration()->environmentizeIndex($indexSuffix);
     }
 
     public function getClient(): Client
@@ -469,7 +487,7 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
         return $this;
     }
 
-    private function findOrMakeIndex(string $index): void
+    private function findOrMakeIndex(string $index, array $settings = []): void
     {
         $indices = $this->getClient()->indices();
 
@@ -477,7 +495,16 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
             return;
         }
 
-        $indices->create(['index' => $index]);
+        $params = ['index' => $index];
+
+        // If we have analyzers/settings, include them in the initial create call
+        if (count($settings) > 0) {
+            $params['body'] = [
+                'settings' => $settings,
+            ];
+        }
+
+        $indices->create($params);
     }
 
     /**
@@ -557,13 +584,21 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
     /**
      * @throws IndexConfigurationException
      */
-    private function validateIndex(string $index): void
+    private function validateIndex(string $indexSuffix): void
     {
         $validTypes = $this->config()->get('valid_field_types') ?? [];
         $map = [];
 
-        foreach ($this->getConfiguration()->getClassesForIndex($index) as $class) {
-            foreach ($this->getConfiguration()->getFieldsForClass($class) as $field) {
+        $indexData = $this->getConfiguration()->getIndexDataForSuffix($indexSuffix);
+
+        if (!$indexData) {
+            throw new IndexConfigurationException(sprintf('No index configuration found for suffix "%s"', $indexSuffix));
+        }
+
+        foreach ($indexData->getClasses() as $class) {
+            $fields = $indexData->getFieldsForClass($class) ?? [];
+
+            foreach ($fields as $field) {
                 $this->validateField($field->getSearchFieldName());
 
                 $type = $field->getOption('type') ?? $this->config()->get('default_field_type');
@@ -596,7 +631,7 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
     /**
      * @param DocumentInterface[] $documents
      */
-    private function getContentMapForDocuments(array $documents): array
+    private function getContentMapForDocuments(string $indexSuffix, array $documents): array
     {
         $documentMap = [];
 
@@ -623,25 +658,26 @@ class OpensearchService implements IndexingInterface, BatchDocumentRemovalInterf
                 continue;
             }
 
-            $indexes = $this->getConfiguration()->getIndexesForDocument($document);
+            $indexes = $this->getConfiguration()->getIndexConfigurationsForDocument($document);
 
-            if (!$indexes) {
+            if (!$indexes || !array_key_exists($indexSuffix, $indexes)) {
                 Injector::inst()->get(LoggerInterface::class)->warning(
-                    sprintf('No valid indexes found for document %s, skipping...', $document->getIdentifier())
+                    sprintf('No valid index with suffix "%s" found for document %s, skipping...', $indexSuffix, $document->getIdentifier())
                 );
 
                 continue;
             }
 
-            foreach (array_keys($indexes) as $indexName) {
-                if (!isset($documentMap[$indexName])) {
-                    $documentMap[$indexName] = [];
-                }
-
-                $documentMap[$indexName][] = $fields;
-            }
+            $documentMap[] = $fields;
         }
 
         return $documentMap;
+    }
+
+    private function documentBelongsToIndexSuffix(string $indexSuffix, DocumentInterface $document): bool
+    {
+        $indexes = $this->getConfiguration()->getIndexConfigurationsForDocument($document) ?? [];
+
+        return array_key_exists($indexSuffix, $indexes);
     }
 }

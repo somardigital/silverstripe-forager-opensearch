@@ -2,14 +2,14 @@
 
 namespace Somar\ForagerElasticsearch\Extensions;
 
+use SilverStripe\Core\Extension;
 use DNADesign\Elemental\Models\BaseElement;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Forager\Extensions\SearchServiceExtension;
 use SilverStripe\Forager\Service\IndexConfiguration;
-use SilverStripe\ORM\DataExtension;
 use SilverStripe\ORM\DataObject;
 
-class ElementalReindexExtension extends DataExtension
+class ElementalReindexExtension extends Extension
 {
     public function onAfterArchive(): void
     {
